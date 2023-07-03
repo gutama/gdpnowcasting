@@ -1,0 +1,660 @@
+---
+title: "Nowcasting GDP with Machine Learning: The Case of Indonesia"
+author: "Ginanjar Utama & Nadira Firinda"
+date: "made on `r format(Sys.time(), '%d %B, %Y   %H:%M')`"
+output:
+  word_document: default
+  pdf_document: default
+  html_document: default
+always_allow_html: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+options(knitr.table.format = "latex")
+library(readxl)
+library(tidymodels)
+library(tidyflow)
+library(broom)
+library(plotly)
+library(patchwork)
+library(kableExtra)
+library(modelStudio)
+library(linkspotter)
+library(energy)
+#library(recipeselectors)
+library(tictoc)
+```
+
+
+```{r, include=FALSE}
+tic("start")
+caching <- TRUE
+
+cores <- parallel::detectCores()
+if (!grepl("mingw32", R.Version()$platform)) {
+ library(doMC)
+ registerDoMC(cores = cores)
+} else {
+  library(doParallel)
+  cl <- makePSOCKcluster(cores)
+  registerDoParallel(cl)
+}
+
+
+```
+
+
+
+
+```{r}
+Dataset_Exercise_Machine_Learning <- read_excel("DataML17.xlsx")
+
+
+rawdata <- Dataset_Exercise_Machine_Learning %>% 
+  mutate(period = as.Date(period)) %>% 
+  filter(period  <= as.Date("2022-12-01")) %>% 
+  select(-c(csprl, csplrl, cslrl, csgrl, inbrl, inhrl, invrl, xgsrl, mgsrl)) %>% 
+    select(c(period,  phase, gdprl, retailsales,	vehicleparts,	foodbeverages,	autofuels,	infocomequip,	hholdequip,	recreationgood,	othergoods,	clothinggoods, mobilsales,	motorsales,	prod_motor,	pmi,	farmertradeidx,	idx_ihsg,	consconfidx,	curreconidx,	consexpctidx,	currincomeidx, jobavailidx,	purchdurableidx,	rtgstx,	skntx,	marketcap,	idx_lq45,	idx_basic_ind,	idx_infr,	idx_finance,	reserve,	exrpl,	crude_oil,	nontaxincome,	taxincome, l1prod_motor))
+
+ggplot(rawdata) + geom_line(aes(x = period, y=gdprl))
+
+rawdata
+
+
+```
+
+```{r}
+filtered <- rawdata %>% filter(period <= as.Date("2022-09-01"))  %>% filter(period >= as.Date("2014-01-01")) %>% select(-period, -phase)
+
+relMethods <- c("pearson", "spearman", "kendall", "mic", "MaxNMI", "distCor")
+
+linksoutput <-linkspotterComplete(filtered, targetVar = c("gdprl"), corMethods = relMethods)
+
+linksoutput$corDF
+```
+
+```{r, include=FALSE, eval=FALSE}
+#links_all <-linkspotterComplete(filtered, corMethods = relMethods)
+
+# links_all$corGroups %>% arrange(group)
+
+#saveRDS(links_all, file="links_csprl.rds")
+
+#saveRDS(links_all, file="links_gdprl8.rds")
+
+links_all <- readRDS(file="links_gdprl8.rds")
+
+
+
+corMat <- links_all$corMatrices$MaxNMI
+
+getClusterVar <- function(corMat) {
+  clust_vars <- clusterVariables(corMat)
+  clust_vars %>% arrange(group)
+  
+  group_clust <- clust_vars %>% filter(var == "gdprl") %>%  select(group)
+  group_number <- group_clust$group
+  clust <- clust_vars %>% filter(group == group_number)
+  clust_notarget <- clust %>% select(var) %>% filter(var != "gdprl")
+  
+  chosen <- clust_notarget$var
+  
+  return(chosen)
+}
+
+chosen <- getClusterVar(corMat)
+
+chosen
+```
+
+
+```{r, include=FALSE}
+nVar = 8
+
+seedNum <- 5231
+metric_type <- "rmse"
+```
+
+
+```{r, eval=FALSE, include=FALSE}
+
+#mrmr
+rec <-
+ recipe(gdprl ~ ., data = filtered) %>%
+ step_select_mrmr(all_predictors(), outcome = "gdprl", top_p = nVar)
+
+#infgain
+# rec <-
+#  recipe(gdprl ~ ., data = filtered) %>%
+#  step_select_infgain(all_predictors(), outcome = "gdprl", top_p = nVar, type = "infogain")
+
+#boruta
+# rec <-
+#  recipe(gdprl ~ ., data = filtered) %>%
+#  step_select_boruta(all_predictors(), outcome = "gdprl")
+
+#car_score
+# rec <-
+#  recipe(gdprl ~ ., data = filtered) %>%
+#  step_select_carscore(all_predictors(), outcome = "gdprl", top_p = nVar)
+
+prepped <- prep(rec)
+
+new_data <- juice(prepped)
+
+
+chosen <- colnames(new_data %>% select(-gdprl))
+
+chosen
+
+```
+
+
+
+```{r, eval=FALSE}
+
+
+vPearson <- linksoutput$corDF  %>% select(X2, pearson) %>% arrange(desc(abs(pearson))) %>% head(nVar) 
+vSpearman <- linksoutput$corDF  %>% select(X2, spearman) %>% arrange(desc(abs(spearman))) %>% head(nVar) 
+vKendall <- linksoutput$corDF  %>% select(X2, kendall) %>% arrange(desc(abs(kendall))) %>% head(nVar) 
+vDistCor <- linksoutput$corDF  %>% select(X2, distCor) %>% arrange(desc(abs(distCor))) %>% head(nVar) 
+vMic <- linksoutput$corDF  %>% select(X2, mic) %>% arrange(desc(abs(mic))) %>% head(nVar) 
+vMaxNMI <- linksoutput$corDF  %>% select(X2, MaxNMI) %>% arrange(desc(abs(MaxNMI))) %>% head(nVar) 
+ 
+
+
+chosen <- vSpearman$X2
+
+chosen
+
+```
+
+
+```{r}
+ chosen <- c("currincomeidx", "purchdurableidx",    "infocomequip",  "consconfidx", "clothinggoods",  "othergoods", "vehicleparts", "foodbeverages",   "pmi", "curreconidx")
+
+
+
+
+datats <- rawdata %>% 
+  select(c(period, phase, gdprl, chosen)) 
+
+yoy <- function(x) {
+ (x/lag(x, n=12) - 1) * 100
+}
+
+qtq <- function(x) {
+ (x/lag(x, n=3) - 1) * 100
+}
+
+smoother <- function(x, phase) {
+ case_when(phase == 1 ~ x,
+           phase == 2 ~ (x + lag(x,1))/2, 
+           phase == 3 ~ (x + lag(x,1)+ lag(x,2))/3,
+                 TRUE ~ as.numeric(NA)
+           )
+}
+
+trans3 <- datats %>% mutate(across(-c("period", "gdprl", "phase"), ~smoother(.x, phase)))
+
+alldata <- trans3 %>% mutate(across(-c("period", "gdprl", "phase"), yoy)) %>% 
+  filter(period  >= as.Date("2013-01-01"))
+
+alldata
+
+newdata <- alldata %>% filter((period  > as.Date("2022-09-01")),(period  <= as.Date("2022-12-01")))
+
+newdata
+  
+```
+
+```{r, eval=FALSE, include=FALSE}
+gdp_rec <-
+  ~ .x %>%
+    recipe(gdprl ~ .) %>%
+    step_rm(contains("period")) %>% 
+    step_center(all_predictors()) %>% 
+    step_scale(all_predictors()) %>% 
+    step_impute_knn(all_predictors(), neighbors = 3)
+
+```
+
+
+```{r, include=FALSE}
+gdp_rec <-
+  ~ .x %>%
+    recipe(gdprl ~ .) %>%
+    step_rm(contains("period")) %>% 
+    step_rm(contains("phase")) %>% 
+    step_center(all_predictors()) %>% 
+    step_scale(all_predictors()) %>% 
+   step_interact(terms = ~ (all_predictors())^2) %>% 
+    step_impute_knn(all_predictors(), neighbors = 3)
+```
+
+
+```{r}
+common_flow <- tidyflow(seed = seedNum) %>% 
+  plug_data(alldata %>% filter(period  <= as.Date("2022-09-01"))) %>% 
+  plug_split(initial_time_split, prop=0.93) %>% 
+  plug_recipe(gdp_rec) %>% 
+#    plug_resample(sliding_period, index="period",period="month",lookback=72,assess_stop=12) %>%  
+  plug_resample(rolling_origin, initial=72, assess=12, cumulative=FALSE, skip = 0) %>%   
+  plug_grid(grid_latin_hypercube, size=19)
+
+```
+
+
+
+```{r}
+
+
+
+elnet_spec <- linear_reg(penalty = tune(), mixture = tune()) %>% set_engine("glmnet")
+
+
+elnet_fit <- common_flow %>% 
+  plug_model(elnet_spec) %>% 
+  fit() %>% 
+  complete_tflow(metric = metric_type)
+  
+
+elnet_fit
+
+
+```
+
+```{r}
+
+elnet_fit %>% pull_tflow_fit_tuning() %>%
+  select_best(metric = metric_type)
+
+elnet_fit %>% pull_tflow_fit_tuning() %>%
+  show_best(metric = metric_type)
+
+
+
+pull_tflow_spec(elnet_fit)
+
+pull_tflow_fit(elnet_fit)
+
+
+
+```
+```{r, eval=FALSE, include=FALSE}
+library(vip)
+
+final_elnet <- pull_tflow_fit(elnet_fit)
+
+vi(final_elnet)
+```
+
+
+
+```{r}
+
+  elnet_train <- elnet_fit %>%
+    predict_training()
+  
+  elnet_test <- elnet_fit %>%
+    predict_testing()
+  
+  
+  train_rmse_elnet <-
+    elnet_train %>%
+    rmse(gdprl, .pred)
+  
+  holdout_rmse_elnet <-
+    elnet_test %>%
+    rmse(gdprl, .pred)
+  
+  train_rmse_elnet$type <- "training"
+  holdout_rmse_elnet$type <- "testing"
+  
+  elnet <- as.data.frame(rbind(train_rmse_elnet, holdout_rmse_elnet))
+  elnet$model <- "Elastic Net"
+  elnet
+
+
+
+```
+
+
+```{r, include=FALSE}
+plot_result <- function(train, test, modeldf) {
+  
+result_train <- train %>% 
+  select(period, gdprl, .pred)
+
+result_test <- test %>% 
+  select(period, gdprl, .pred)
+
+result <- bind_rows(result_train, result_test)
+
+result
+
+pict <- ggplot(result, aes(x = period)) +
+  geom_rect(xmin = as.numeric(test$period[1]),
+              xmax = as.numeric(test$period[nrow(test)]),
+              ymin = -6, ymax = 8, fill = "grey", alpha=0.2) +
+  geom_line(aes(y = gdprl, colour = "Actual")) +
+  geom_line(aes(y = .pred, colour = "Prediction")) +
+  ylab("GDP growth (%)") + xlab("Year") +
+  ggtitle(paste(modeldf$model[1], "Model")) +
+  guides(fill=guide_legend(title=NULL)) +
+  theme_minimal() +
+  theme(legend.position = c(0.3, 0.1),legend.title = element_blank(), legend.direction = "horizontal" )
+
+}
+
+
+```
+
+
+```{r}
+plot_elnet <- plot_result(elnet_train, elnet_test, elnet) 
+ggplotly(plot_elnet)  %>% layout(legend = list(orientation = "h", x = 0.3, y = 0.1, title=""))
+
+```
+
+
+```{r}
+fcast_elnet <- elnet_fit %>% predict(newdata) %>% rename(elnet = .pred)
+
+fcast_elnet
+  
+```
+
+
+
+```{r}
+rf_spec <- rand_forest(mode = "regression", trees = tune(), mtry = tune(), min_n = tune()) %>% set_engine("randomForest")
+
+rf_spec
+
+
+rf_fit <- common_flow %>% 
+  plug_model(rf_spec) %>% 
+  fit() %>% 
+  complete_tflow(metric = metric_type)
+
+rf_fit
+```
+
+```{r}
+
+
+rf_fit %>% pull_tflow_fit_tuning() %>%
+  select_best(metric = metric_type)
+
+rf_fit %>% pull_tflow_fit_tuning() %>%
+  show_best(metric = metric_type)
+
+
+pull_tflow_spec(rf_fit)
+
+pull_tflow_fit(rf_fit)
+```
+
+
+
+```{r}
+
+rf_train <- rf_fit %>%
+  predict_training()
+
+rf_test <- rf_fit %>%
+  predict_testing()
+
+
+train_rmse_rf <-
+  rf_train %>%
+  rmse(gdprl, .pred)
+
+holdout_rmse_rf <-
+  rf_test %>%
+  rmse(gdprl, .pred)
+
+train_rmse_rf$type <- "training"
+holdout_rmse_rf$type <- "testing"
+
+rf <- as.data.frame(rbind(train_rmse_rf, holdout_rmse_rf))
+rf$model <- "Random Forest"
+rf
+
+
+```
+
+
+```{r}
+plot_rf <- plot_result(rf_train, rf_test, rf) 
+ggplotly(plot_rf) %>% layout(legend = list(orientation = "h", x = 0.3, y = 0.1, title=""))
+```
+
+```{r}
+model_comparison <- rbind(elnet, rf)
+model_comparison
+```
+
+```{r}
+fcast_rf <- rf_fit %>% predict(newdata) %>% rename(rf = .pred)
+
+fcast_rf
+
+fcast_comparison <- cbind(fcast_elnet, fcast_rf)
+fcast_comparison
+```
+
+
+
+XGBoost 
+```{r}
+
+bt <- boost_tree(mode = "regression", mtry = tune(), trees = tune(), tree_depth = tune(), loss_reduction = tune(), learn_rate = 0.03) %>% set_engine("xgboost")
+
+bt
+
+bt_fit <- common_flow %>% 
+  plug_model(bt) %>% 
+  fit() %>% 
+  complete_tflow(metric = metric_type)
+
+bt_fit
+```
+
+
+
+
+```{r}
+
+
+bt_fit %>% pull_tflow_fit_tuning() %>%
+  select_best(metric = "rmse")
+
+bt_fit %>% pull_tflow_fit_tuning() %>%
+  show_best(metric = "rmse")
+
+pull_tflow_spec(bt_fit)
+
+pull_tflow_fit(bt_fit)
+
+
+```
+
+
+
+```{r}
+
+bt_train <- bt_fit %>%
+  predict_training()
+
+bt_test <- bt_fit %>%
+  predict_testing()
+
+
+train_rmse_xgboost <-
+  bt_train %>%
+  rmse(gdprl, .pred)
+
+holdout_rmse_bt <-
+  bt_test %>%
+  rmse(gdprl, .pred)
+
+train_rmse_xgboost$type <- "training"
+holdout_rmse_bt$type <- "testing"
+
+xgboost <- as.data.frame(rbind(train_rmse_xgboost, holdout_rmse_bt))
+xgboost$model <- "XGBoost"
+xgboost
+
+
+```
+
+
+```{r}
+plot_xgboost <- plot_result(bt_train, bt_test, xgboost) 
+ggplotly(plot_xgboost) %>% layout(legend = list(orientation = "h", x = 0.3, y = 0.1, title=""))
+```
+
+
+
+```{r}
+model_comparison <- rbind(model_comparison, xgboost)
+model_comparison
+```
+
+
+```{r}
+fcast_xgboost <- bt_fit %>% predict(newdata) %>% rename(xgboost = .pred)
+
+fcast_xgboost
+
+fcast_comparison <- cbind(fcast_comparison, fcast_xgboost)
+fcast_comparison
+```
+
+
+```{r}
+svm <- svm_poly(mode = "regression", cost = tune(), degree = tune(), scale_factor = tune(), margin = tune()) %>% set_engine("kernlab")
+
+svm
+
+svm_fit <- common_flow %>% 
+  plug_model(svm) %>% 
+  fit() %>% 
+  complete_tflow(metric = metric_type)
+
+svm_fit
+```
+
+```{r}
+
+svm_fit %>% pull_tflow_fit_tuning() %>%
+  select_best(metric = metric_type)
+
+svm_fit %>% pull_tflow_fit_tuning() %>%
+  show_best(metric = metric_type)
+
+
+pull_tflow_spec(svm_fit)
+
+pull_tflow_fit(svm_fit)
+
+```
+
+```{r, eval=FALSE, include=FALSE}
+vi(pull_tflow_fit(svm_fit))
+```
+
+
+```{r}
+
+svm_train <- svm_fit %>%
+  predict_training()
+
+svm_test <- svm_fit %>%
+  predict_testing()
+
+
+train_rmse_svm <-
+  svm_train %>%
+  rmse(gdprl, .pred)
+
+holdout_rsme_svm <-
+  svm_test %>%
+  rmse(gdprl, .pred)
+
+train_rmse_svm$type <- "training"
+holdout_rsme_svm$type <- "testing"
+
+svm <- as.data.frame(rbind(train_rmse_svm, holdout_rsme_svm))
+svm$model <- "Support Vector Machine"
+svm
+
+
+```
+
+
+```{r}
+plot_svm <- plot_result(svm_train, svm_test, svm) 
+ggplotly(plot_svm) %>% layout(legend = list(orientation = "h", x = 0.3, y = 0.1, title=""))
+```
+
+
+```{r}
+( plot_elnet + plot_svm ) / ( plot_rf + plot_xgboost )
+```
+
+
+```{r}
+model_comparison <- rbind(model_comparison, svm)
+model_comparison %>% kbl() %>% kable_styling()
+```
+
+```{r}
+model_comparison %>% pivot_wider(names_from = type, values_from = .estimate) %>% select(model, training, testing) %>% kbl() %>% kable_classic() 
+```
+
+
+
+```{r}
+
+model_comparison %>%
+  ggplot(aes(model, .estimate, color = type, group = type)) +
+  geom_point(position = position_dodge()) +
+  geom_line() +
+  scale_y_continuous(name = "RMSE") +
+  scale_x_discrete(name = "Models") +
+  theme_minimal()
+```
+
+```{r}
+fcast_svm <- svm_fit %>% predict(newdata) %>% rename(svm = .pred)
+
+fcast_svm
+
+fcast_comparison <- cbind(fcast_comparison, fcast_svm)
+
+fcast_comparison <- fcast_comparison %>% mutate(ensemble_avg = (elnet+rf+xgboost+svm)/4)
+
+fcast_comparison %>% kbl() %>% kable_classic_2()
+```
+
+```{r}
+fcast_comparison %>% 
+   summarise_all(mean) %>% kbl() %>% kable_classic_2()
+```
+
+
+
+
+```{r}
+if (grepl("mingw32", R.Version()$platform)) {
+ stopCluster(cl)
+} 
+
+toc()
+
+```
+
